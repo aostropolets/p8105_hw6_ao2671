@@ -1,0 +1,94 @@
+---
+title: "Homework 6"
+author: "Anna Ostropolets"
+date: "12/1/2020"
+output: github_document
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(rvest)
+library(RCurl)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+# Problem 1
+
+```{r data, warning=FALSE, message=FALSE}
+# loading the data
+url <- getURL("https://raw.githubusercontent.com/washingtonpost/data-homicides/master/homicide-data.csv")
+data <- read.csv(text = url)
+
+aggregated_data<-
+  data %>%
+  mutate(
+    city_state = str_c(city, state, sep = ","),
+    # recode
+    status = case_when(
+      disposition == "Closed without arrest" ~ 0,
+      disposition == "Open/No arrest" ~ 0,
+      disposition == "Closed by arrest" ~ 1,
+    ),
+    victim_age = as.numeric(na_if(victim_age,'Unknown'))
+  ) %>%
+  filter(!city_state %in% c("Tulsa,AL", "Dallas,TX", "Phoenix,AZ",  "Kansas City,MO")
+         & victim_race %in% c("White","Black"))
+```
+
+Odds ratios of solving homicides comparing white victims to non-white victims in Baltimore
+
+```{r glm_baltimore}
+baltimore = 
+  aggregated_data %>% 
+  filter(city_state == "Baltimore,MD") %>%
+  as.matrix()
+
+glm(status ~ victim_age + victim_race + victim_sex,
+    data = aggregated_data,
+    family = binomial()) %>% 
+  broom::tidy() %>% 
+  mutate(
+    OR = exp(estimate),
+    CI_lower = exp(estimate - 1.96 * std.error),
+    CI_upper = exp(estimate + 1.96 * std.error)
+  ) %>% 
+  filter(term == "victim_raceWhite") %>%
+  select(OR, starts_with("CI")) 
+```
+
+
+Running the same linear regression for all cities
+
+```{r glm}
+glm <-
+  aggregated_data %>% 
+  nest(data = -city_state) %>% 
+  mutate(
+    models = 
+      map(.x = data, ~glm(status ~ victim_age + victim_race + victim_sex, data = .x, family = binomial())),
+    results = map(models, broom::tidy)
+    ) %>%
+  select(city_state, results) %>% 
+  unnest(results) %>% 
+  mutate(
+    OR = exp(estimate),
+    CI_lower = exp(estimate - 1.96 * std.error),
+    CI_upper = exp(estimate + 1.96 * std.error)
+  ) %>% 
+  filter(term == "victim_raceWhite") %>%
+  select(city_state, OR, starts_with("CI"))
+```
+
+A plot showing odds ratios of solving crimes for white vs non-white victims across states.
+
+
+```{r plot}
+  glm %>% 
+  mutate(city_state = fct_reorder(city_state, OR)) %>% 
+  ggplot(aes(x = city_state, y = OR)) +
+  geom_point() + 
+  geom_errorbar(aes(ymin = CI_lower, ymax = CI_upper)) + 
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1)) +
+  labs(title = "Odds ratios of solving crimes for non-white vs white victims across states")
+```
