@@ -7,8 +7,8 @@ output: github_document
 
 ```{r setup, include=FALSE}
 library(tidyverse)
-library(rvest)
-library(RCurl)
+library(ggplot2)
+library(modelr)
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
@@ -92,3 +92,99 @@ A plot showing odds ratios of solving crimes for white vs non-white victims acro
   theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1)) +
   labs(title = "Odds ratios of solving crimes for non-white vs white victims across states")
 ```
+
+
+# Problem 2
+
+Import data for problem 2
+
+```{r data2 message=FALSE, warning=FALSE}
+birth_weight = 
+  read_csv("./birthweight.csv") %>% 
+  drop_na() %>%
+  # recoding
+   mutate(
+     mrace = case_when(
+      mrace == 1 ~ "White",
+      mrace == 2 ~ "Black",
+      mrace == 3 ~ "Asian",
+      mrace == 4 ~ "Puerto Rican",
+      mrace == 8 ~ "Other"),
+     # converting to factors
+     mrace = as.factor(mrace),
+    frace = as.factor(frace),
+    malform = as.factor(malform),
+    babysex = case_when(
+      babysex == 1 ~ "Male",
+      babysex == 2 ~ "Female"), 
+   babysex = as.factor(babysex))
+```
+
+
+The regression models accounts for the known factors that influence birth weight: gestational age, baby gender, smoking, mother's age and malformations that can affect weight and mother's obesity, all of which have been already reported to have an association with low birth weight. We converted number of cigarettes and pre-pregnancy weight into binary variables. 
+We hypothesized that mother's race is a predictor of low birth weight independent (conditioned on) of the factors above.
+
+```{r model message=FALSE, warning=FALSE}
+lm_data <-
+  birth_weight %>%
+   mutate(
+     obesity = case_when(
+      ppbmi >40 ~ 1,
+      ppbmi <=40 ~ 0),
+      obesity = as.factor(obesity),
+    smoking = case_when(
+      smoken >0 ~ 1,
+      smoken == 0 ~ 0),
+     smoking = as.factor(smoking)) %>%
+   select (mrace,  obesity, smoking, momage, babysex, bwt, gaweeks, malform, bhead, blength )  
+
+
+first_model = lm(bwt ~ mrace + obesity + smoking + momage + babysex + gaweeks + malform, data = lm_data)
+
+# plotting
+lm_data %>% 
+  modelr::add_residuals(first_model) %>% 
+  modelr::add_predictions(first_model)  %>%
+  ggplot(aes(x = mrace, y = resid)) + 
+  geom_point() +
+  labs(title = "Model residuals")
+  
+second_model = lm(bwt ~ blength + gaweeks, data = lm_data)
+third_model = lm(bwt ~ bhead*blength*babysex , data = lm_data)
+
+```
+ We can see that residuals are different for Asians
+```{r model_comp message=FALSE, warning=FALSE}
+
+# create df for cross-validation
+cross_val =
+  crossv_mc(lm_data, 100) %>% 
+  mutate(
+    train = map(train, as_tibble),
+    test = map(test, as_tibble))
+
+cross_val = 
+  cross_val %>% 
+  mutate(
+    first_model  = map(train, lm(bwt ~ mrace + obesity + smoking + momage + babysex + gaweeks + malform, data = .x)),
+    second_model =  map(train, ~lm(bwt ~ blength + gaweeks, data = .x)),
+    third_model  = map(train, ~lm(bwt ~ bhead*blength*babysex, data = .x))
+    ) %>% 
+  mutate(
+    rmse_one = map2_dbl(first_model, test, ~rmse(model = .x, data = .y)),
+    rmse_two    = map2_dbl(second_model, test, ~rmse(model = .x, data = .y)),
+    rmse_three = map2_dbl(third_model, test, ~rmse(model = .x, data = .y)))
+
+## Finally, I’ll plot the prediction error distribution for each candidate model.
+cross_val %>% 
+  select(starts_with("rmse")) %>% 
+  pivot_longer(
+    everything(),
+    names_to = "model", 
+    values_to = "rmse",
+    names_prefix = "rmse_") %>% 
+  mutate(model = fct_inorder(model)) %>% 
+  ggplot(aes(x = model, y = rmse)) + geom_violin()
+
+```
+
